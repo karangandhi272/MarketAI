@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import './App.css'
 import { Button } from "./components/ui/button"
 import { Input } from "./components/ui/input"
@@ -6,7 +6,15 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "./com
 import { Textarea } from "./components/ui/textarea"
 import OpenAI from 'openai'
 import DatabaseIcon from './components/icons/database-icon'
-
+import { json } from 'stream/consumers'
+import ReactFlow, { 
+  Controls, 
+  Background, 
+  useNodesState, 
+  useEdgesState,
+  MarkerType
+} from 'reactflow';
+import 'reactflow/dist/style.css';
 
 // Initialize OpenAI client
 const openai = new OpenAI({
@@ -31,6 +39,9 @@ function App() {
   const [isSchemaDialogOpen, setIsSchemaDialogOpen] = useState(false);
   const [connectionString, setConnectionString] = useState('');
   const [parsedSchema, setParsedSchema] = useState<any[]>([]);
+  const [nodes, setNodes, onNodesChange] = useNodesState([]);
+  const [edges, setEdges, onEdgesChange] = useEdgesState([]);
+  const [viewMode, setViewMode] = useState<'list' | 'mindmap'>('list');
 
   const generateSentence = async (queryResult: any, originalAnswer: string) => {
     try {
@@ -105,14 +116,17 @@ For answer the answer should be:
         const jsonContent = jsonMatch ? jsonMatch[1] : content;
         return JSON.parse(jsonContent);
       } catch (e) {
+        console.error('Error parsing JSON:', e);
         // Fallback if JSON parsing fails
         return {
+    
           answer: "I couldn't generate a proper response. Please try rephrasing your question.",
           query: "-- No query generated",
           explanation: "There was an error processing your request."
         };
       }
     } catch (error) {
+      console.error('Error generating SQL:', error);
       console.error('Error generating SQL:', error);
       return {
         answer: "An error occurred while generating the SQL query.",
@@ -329,6 +343,97 @@ For answer the answer should be:
     }
   }, [dbSchema]);
 
+  // Add this function to generate the mindmap data from your schema
+  const generateSchemaGraph = useCallback(() => {
+    if (!parsedSchema || parsedSchema.length === 0) return;
+    
+    // Create nodes for each table
+    const flowNodes = parsedSchema.map((table, index) => {
+      return {
+        id: table.tableName,
+        data: { 
+          label: (
+            <div className="p-2">
+              <div className="font-bold mb-1">{table.tableName}</div>
+              <div className="text-xs max-h-32 overflow-auto">
+                {table.columns.map((col: any) => (
+                  <div key={col.name} className="flex items-center gap-1">
+                    <span className={col.isPrimary ? "text-amber-600 font-bold" : ""}>
+                      {col.name}
+                    </span>
+                    <span className="text-gray-400 text-[10px]">({col.type.split(' ')[0]})</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )
+        },
+        position: { 
+          x: 150 + (index % 3) * 300, 
+          y: 100 + Math.floor(index / 3) * 250 
+        },
+        style: {
+          background: "#ffffff",
+          border: "1px solid #e5e7eb",
+          borderRadius: "8px",
+          boxShadow: "0 1px 3px 0 rgba(0, 0, 0, 0.1)",
+          width: 200,
+        }
+      };
+    });
+    
+    // Find foreign key relationships to create edges
+    const flowEdges: any[] = [];
+    
+    // This is where we'd normally extract FK relationships
+    // Since we don't have explicit FK information in our schema format,
+    // we'll look for common naming patterns like table_id
+    
+    // For each table, look for potential foreign keys
+    parsedSchema.forEach(sourceTable => {
+      // For each column in this table
+      sourceTable.columns.forEach((column: any) => {
+        // Look for columns ending with "_id" that might be foreign keys
+        if (column.name.endsWith('_id')) {
+          // Extract potential table name (remove _id suffix)
+          const potentialTableName = column.name.slice(0, -3);
+          
+          // Check if we have a table with this name (singular or plural form)
+          const targetTable = parsedSchema.find(t => 
+            t.tableName === potentialTableName || 
+            t.tableName === `${potentialTableName}s`
+          );
+          
+          if (targetTable) {
+            flowEdges.push({
+              id: `e-${sourceTable.tableName}-${targetTable.tableName}`,
+              source: sourceTable.tableName,
+              target: targetTable.tableName,
+              animated: true,
+              markerEnd: {
+                type: MarkerType.ArrowClosed,
+                width: 15,
+                height: 15,
+              },
+              style: { stroke: '#6366f1' },
+              label: column.name,
+            });
+          }
+        }
+      });
+    });
+    
+    setNodes(flowNodes);
+    setEdges(flowEdges);
+  }, [parsedSchema, setNodes, setEdges]);
+  
+  // Call this when schema changes
+  useEffect(() => {
+    if (parsedSchema.length > 0) {
+      generateSchemaGraph();
+    }
+  }, [parsedSchema, generateSchemaGraph]);
+
   // Function to open schema dialog
   const openSchemaDialog = () => {
     setIsSchemaDialogOpen(true);
@@ -438,9 +543,9 @@ For answer the answer should be:
       {/* Schema Dialog */}
       {isSchemaDialogOpen && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50 overflow-auto">
-          <div className="bg-white rounded-lg max-w-5xl w-full max-h-[90vh] overflow-auto shadow-xl">
-            <div className="p-6">
-              <div className="flex justify-between items-center mb-6">
+          <div className="bg-white rounded-lg max-w-6xl w-full max-h-[90vh] overflow-hidden shadow-xl flex flex-col">
+            <div className="p-6 border-b">
+              <div className="flex justify-between items-center">
                 <h2 className="text-2xl font-bold flex items-center gap-2">
                   <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                     <ellipse cx="12" cy="5" rx="9" ry="3"></ellipse>
@@ -449,64 +554,116 @@ For answer the answer should be:
                   </svg>
                   Database Schema
                 </h2>
-                <Button 
-                  variant="outline" 
-                  onClick={() => setIsSchemaDialogOpen(false)}
-                  className="ml-auto"
-                >
-                  Close
-                </Button>
-              </div>
-              
-              <p className="text-gray-600 mb-4">Tables found in your database:</p>
-              
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                {parsedSchema.map((table, index) => (
-                  <div key={index} className="border rounded-lg overflow-hidden shadow-sm">
-                    <div className="bg-gray-100 p-3 font-medium border-b flex items-center gap-2">
-                      <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                        <path d="M3 3h18v18H3zM21 9H3M21 15H3M12 3v18"></path>
-                      </svg>
-                      <span className="font-bold">{table.tableName}</span>
-                    </div>
-                    <div className="p-0">
-                      <table className="w-full text-sm">
-                        <thead className="bg-gray-50">
-                          <tr className="border-b">
-                            <th className="p-2 text-left font-medium">Column</th>
-                            <th className="p-2 text-left font-medium">Type</th>
-                            <th className="p-2 text-center font-medium">Key</th>
-                            <th className="p-2 text-center font-medium">Nullable</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {table.columns.map((column: any, colIndex: number) => (
-                            <tr key={colIndex} className={colIndex % 2 === 0 ? 'bg-white' : 'bg-gray-50'}>
-                              <td className="p-2 border-t font-medium">{column.name}</td>
-                              <td className="p-2 border-t text-gray-600 font-mono text-xs">{column.type}</td>
-                              <td className="p-2 border-t text-center">
-                                {column.isPrimary && (
-                                  <span className="inline-flex items-center justify-center h-6 w-6 rounded-full bg-amber-100 text-amber-800" title="Primary Key">
-                                    <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                                      <path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"></path>
-                                    </svg>
-                                  </span>
-                                )}
-                              </td>
-                              <td className="p-2 border-t text-center">
-                                {column.isNullable ? 
-                                  <span className="text-green-600">✓</span> : 
-                                  <span className="text-red-600">✗</span>
-                                }
-                              </td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
+                
+                <div className="flex gap-3">
+                  <div className="bg-gray-100 rounded-lg p-1 flex">
+                    <button
+                      onClick={() => setViewMode('list')}
+                      className={`px-3 py-1 rounded-md text-sm ${
+                        viewMode === 'list' 
+                          ? 'bg-white shadow-sm font-medium' 
+                          : 'text-gray-600 hover:bg-gray-200'
+                      }`}
+                    >
+                      Table View
+                    </button>
+                    <button
+                      onClick={() => setViewMode('mindmap')}
+                      className={`px-3 py-1 rounded-md text-sm ${
+                        viewMode === 'mindmap' 
+                          ? 'bg-white shadow-sm font-medium' 
+                          : 'text-gray-600 hover:bg-gray-200'
+                      }`}
+                    >
+                      Mindmap View
+                    </button>
                   </div>
-                ))}
+                  
+                  <Button 
+                    variant="outline" 
+                    onClick={() => setIsSchemaDialogOpen(false)}
+                  >
+                    Close
+                  </Button>
+                </div>
               </div>
+            </div>
+            
+            <div className="flex-1 overflow-auto">
+              {viewMode === 'list' ? (
+                <div className="p-6">
+                  <p className="text-gray-600 mb-4">Tables found in your database:</p>
+                  
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                    {/* Existing table view code */}
+                    {parsedSchema.map((table, index) => (
+                      <div key={index} className="border rounded-lg overflow-hidden shadow-sm">
+                        <div className="bg-gray-100 p-3 font-medium border-b flex items-center gap-2">
+                          <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                            <path d="M3 3h18v18H3zM21 9H3M21 15H3M12 3v18"></path>
+                          </svg>
+                          <span className="font-bold">{table.tableName}</span>
+                        </div>
+                        <div className="p-0">
+                          <table className="w-full text-sm">
+                            <thead className="bg-gray-50">
+                              <tr className="border-b">
+                                <th className="p-2 text-left font-medium">Column</th>
+                                <th className="p-2 text-left font-medium">Type</th>
+                                <th className="p-2 text-center font-medium">Key</th>
+                                <th className="p-2 text-center font-medium">Nullable</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {table.columns.map((column: any, colIndex: number) => (
+                                <tr key={colIndex} className={colIndex % 2 === 0 ? 'bg-white' : 'bg-gray-50'}>
+                                  <td className="p-2 border-t font-medium">{column.name}</td>
+                                  <td className="p-2 border-t text-gray-600 font-mono text-xs">{column.type}</td>
+                                  <td className="p-2 border-t text-center">
+                                    {column.isPrimary && (
+                                      <span className="inline-flex items-center justify-center h-6 w-6 rounded-full bg-amber-100 text-amber-800" title="Primary Key">
+                                        <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                          <path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"></path>
+                                        </svg>
+                                      </span>
+                                    )}
+                                  </td>
+                                  <td className="p-2 border-t text-center">
+                                    {column.isNullable ? 
+                                      <span className="text-green-600">✓</span> : 
+                                      <span className="text-red-600">✗</span>
+                                    }
+                                  </td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ) : (
+                <div style={{ width: '100%', height: '70vh' }}>
+                  {nodes.length > 0 ? (
+                    <ReactFlow
+                      nodes={nodes}
+                      edges={edges}
+                      onNodesChange={onNodesChange}
+                      onEdgesChange={onEdgesChange}
+                      fitView
+                      attributionPosition="bottom-left"
+                    >
+                      <Controls />
+                      <Background color="#f8fafc" gap={16} />
+                    </ReactFlow>
+                  ) : (
+                    <div className="h-full flex items-center justify-center">
+                      <p className="text-gray-500">No schema relationships detected</p>
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
           </div>
         </div>
